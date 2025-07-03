@@ -1,21 +1,13 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI } from "@google/genai";
 
 // --- Types ---
 interface NewsArticle {
   headline: string;
   summary: string;
+  date: string;
+  imageUrl: string;
 }
-
-// --- API Initialization ---
-const apiKey = process.env.API_KEY;
-if (!apiKey) {
-  // In a real app, you'd want to show this error in the UI.
-  console.error("API_KEY environment variable not set.");
-}
-const ai = new GoogleGenAI({ apiKey });
 
 // --- Styles ---
 const styles = `
@@ -62,6 +54,7 @@ const styles = `
     background-color: rgba(255, 77, 77, 0.1);
     padding: 10px 15px;
     border-radius: 8px;
+    max-width: 90%;
   }
 
   .news-swiper {
@@ -81,16 +74,36 @@ const styles = `
     background: linear-gradient(145deg, #2a2a2e, #1e1e22);
     border-radius: 20px;
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    padding: 30px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    justify-content: center;
     transition: transform 0.5s ease-out, opacity 0.5s ease-out;
     opacity: 0;
     transform-style: preserve-3d;
     backface-visibility: hidden;
     will-change: transform, opacity;
+    overflow: hidden; /* To contain image corners */
+  }
+  
+  .news-card-image-wrapper {
+    width: 100%;
+    height: 220px;
+    background-color: #333; /* Placeholder color */
+    flex-shrink: 0;
+  }
+  
+  .news-card-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  
+  .news-card-content {
+    padding: 20px 30px 30px;
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    overflow: hidden;
   }
 
   .news-card.active {
@@ -112,26 +125,33 @@ const styles = `
   }
 
   .news-card h2 {
-    font-size: 1.5rem;
-    margin: 0 0 15px;
+    font-size: 1.4rem;
+    margin: 0 0 8px;
     font-weight: 700;
     color: #f0f0f0;
     line-height: 1.3;
   }
+  
+  .news-card-date {
+    font-size: 0.8rem;
+    color: #999;
+    margin-bottom: 15px;
+  }
 
-  .news-card p {
+  .news-card-summary {
     font-size: 1rem;
     line-height: 1.6;
     color: #b0b0b0;
     flex-grow: 1;
     overflow-y: auto;
     padding-right: 10px; /* space for scrollbar */
+    margin: 0;
   }
   
-  .news-card p::-webkit-scrollbar { width: 5px; }
-  .news-card p::-webkit-scrollbar-track { background: transparent; }
-  .news-card p::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
-  .news-card p::-webkit-scrollbar-thumb:hover { background: #777; }
+  .news-card-summary::-webkit-scrollbar { width: 5px; }
+  .news-card-summary::-webkit-scrollbar-track { background: transparent; }
+  .news-card-summary::-webkit-scrollbar-thumb { background: #555; border-radius: 10px; }
+  .news-card-summary::-webkit-scrollbar-thumb:hover { background: #777; }
 
   .progress-bar-container {
       width: 80%;
@@ -158,13 +178,31 @@ const styles = `
   }
 `;
 
-// --- Components ---
+// --- Helpers ---
+const formatDate = (dateString: string) => {
+    try {
+        return new Date(dateString).toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+        });
+    } catch (e) {
+        return dateString; // Fallback to original string if format is invalid
+    }
+};
 
+// --- Components ---
 const NewsCard: React.FC<{ article: NewsArticle, status?: 'prev' | 'active' | 'next' }> = ({ article, status }) => {
   return (
     <div className={`news-card ${status || ''}`.trim()} aria-hidden={status !== 'active'}>
-      <h2>{article.headline}</h2>
-      <p>{article.summary}</p>
+      <div className="news-card-image-wrapper">
+        {article.imageUrl && <img src={article.imageUrl} alt={article.headline} className="news-card-image" />}
+      </div>
+      <div className="news-card-content">
+        <h2>{article.headline}</h2>
+        <p className="news-card-date">{formatDate(article.date)}</p>
+        <p className="news-card-summary">{article.summary}</p>
+      </div>
     </div>
   );
 };
@@ -181,47 +219,27 @@ const App = () => {
 
   useEffect(() => {
     const fetchNews = async () => {
-      if (!apiKey) {
-        setError("API key is not configured.");
-        setLoading(false);
-        return;
-      }
-
       setLoading(true);
       setError(null);
       try {
-        const prompt = `
-          Provide the top 7 latest and most significant news summaries related to the Indian share market from the last 24 hours.
-          The tone should be neutral and factual, similar to a news brief.
-          Each summary should be concise, around 60-80 words.
-          Return the response as a JSON array where each object has two keys: "headline" (a short, catchy title) and "summary" (the news brief).
-        `;
+        const response = await fetch('/api/generate-news');
 
-        const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-04-17",
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-          },
-        });
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error?.message || `Request failed with status ${response.status}`);
+        }
 
-        let jsonStr = response.text.trim();
-        const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
-        const match = jsonStr.match(fenceRegex);
-        if (match && match[2]) {
-          jsonStr = match[2].trim();
+        const finalNews: NewsArticle[] = await response.json();
+        
+        if (!Array.isArray(finalNews)) {
+          throw new Error("Received data from server is not in the expected format.");
         }
         
-        const parsedNews = JSON.parse(jsonStr);
-        if (Array.isArray(parsedNews) && parsedNews.length > 0) {
-          setNews(parsedNews);
-        } else {
-          throw new Error("Received data is not in the expected array format or is empty.");
-        }
+        setNews(finalNews);
 
       } catch (err) {
         console.error("Failed to fetch news:", err);
-        setError("Could not fetch the latest market news. Please try again later.");
+        setError(`Could not fetch market news. Please try again later. (Details: ${err.message})`);
       } finally {
         setLoading(false);
       }
@@ -269,7 +287,7 @@ const App = () => {
       return (
         <div className="loading-container">
           <div className="loader"></div>
-          <p>Fetching Latest Market News...</p>
+          <p>Crafting Your News Feed...</p>
         </div>
       );
     }
@@ -307,7 +325,11 @@ const App = () => {
             } else if (index === (currentIndex + 1) % news.length) {
               status = 'next';
             }
-            return <NewsCard key={index} article={article} status={status} />;
+            // Only render the active, previous, and next cards for performance
+            if (status) {
+              return <NewsCard key={index} article={article} status={status} />;
+            }
+            return null;
           })}
         </div>
         <div className="progress-bar-container">
